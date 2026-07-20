@@ -18,7 +18,20 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      # A tag can point at any commit, including one that never went through a
+      # pull request or the branch protections on main. Without this, tagging
+      # is a way around every check the repository has.
+      - name: Tagged commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main" >&2
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt, clippy

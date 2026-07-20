@@ -336,6 +336,11 @@ fn a_save_makes_one_clients_text_the_shared_truth() {
     let doc = json!({ "uri": uri, "languageId": "rust", "version": 1, "text": "on disk" });
     a.notify("textDocument/didOpen", json!({ "textDocument": doc }));
     b.notify("textDocument/didOpen", json!({ "textDocument": doc }));
+    // Both opens must land before A diverges. Each client is a separate
+    // connection, so without this the daemon may process B's didOpen after the
+    // save, which registers B's now-stale text against the new base and leaves
+    // the document dirty. A round trip on B's own stream is the barrier.
+    b.request("test/ping", json!({}));
     a.notify(
         "textDocument/didChange",
         json!({

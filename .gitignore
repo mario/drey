@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+*.log
+.DS_Store
+
+# Local tooling state, never part of the source tree.
+.usefinal/
+.claude/
+__pycache__/

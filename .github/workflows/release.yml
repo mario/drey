@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Never publish something that does not pass its own gate. A tag push skips
+  # the pull-request run, so redo it here.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build && python3 tests/e2e.py
+
+      # The tag and the version in Cargo.toml disagreeing is the classic way to
+      # publish 0.1.0 twice and burn a version number.
+      - name: Tag matches Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(cargo metadata --format-version 1 --no-deps \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          if [ "$tag" != "$manifest" ]; then
+            echo "tag $tag != Cargo.toml $manifest" >&2
+            exit 1
+          fi
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    # Protect this environment with a required reviewer so a stray tag cannot
+    # publish on its own.
+    environment: crates-io
+    permissions:
+      # Trusted publishing: GitHub mints an OIDC token, crates.io exchanges it
+      # for a short-lived one. No CARGO_REGISTRY_TOKEN secret to leak.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

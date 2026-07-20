@@ -2,18 +2,26 @@
 yanked = "deny"
 
 [licenses]
-# Apache-2.0 downstream, so permissive licences only. No copyleft by accident.
+# drey ships under Apache-2.0, so dependencies stay permissive. The list is
+# what the tree actually resolves to; adding a licence here should be a
+# deliberate decision, not a reaction to a red build.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "ISC",
     "Unicode-3.0",
-    "Zlib",
+    "Unlicense",
 ]
 confidence-threshold = 0.9
+
+# MPL-2.0 is file-level copyleft: the obligation is to publish changes to the
+# MPL-licensed files themselves, and it does not reach the rest of a binary
+# that links them. drey does not modify option-ext, and `dirs` still depends on
+# it as of 6.0, so upgrading does not remove it. Scoped to this one crate on
+# purpose: a blanket MPL allowance would let the next one in unnoticed.
+[[licenses.exceptions]]
+name = "option-ext"
+allow = ["MPL-2.0"]
 
 [bans]
 multiple-versions = "warn"

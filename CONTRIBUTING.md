@@ -91,6 +91,11 @@ Three kinds live here, and the right one depends on what you touched:
   mock server. Anything about sharing, forking, divergence or server-initiated
   requests belongs here, because those are properties of two processes talking,
   not of a function.
+- **Real-server smoke** in `tests/smoke_real.py`, against an actual
+  rust-analyzer. The mock behaves exactly as the test expects, which is what
+  makes it fast and what makes it blind: it cannot tell you whether a real
+  incremental engine, handed two clients' texts in turn, answers each from its
+  own version. Run this one by hand before anything that touches document state.
 
 A change to sharing policy needs an e2e test that fails without it. This is the
 one rule I will nitpick in review.

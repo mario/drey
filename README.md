@@ -304,8 +304,9 @@ max_backends = 0           # 0 = no cap
 ## Tests
 
 ```sh
-cargo test            # 150 unit tests + 11 CLI integration tests
-python3 tests/e2e.py  # end-to-end against a mock server, over the real shim
+cargo test                  # 150 unit tests + 11 CLI integration tests
+python3 tests/e2e.py        # end-to-end against a mock server, over the real shim
+python3 tests/smoke_real.py # against a real rust-analyzer (not run in CI)
 ```
 
 The unit tests cover framing (malformed, lowercase and missing `Content-Length`,
@@ -315,6 +316,20 @@ rewriting, config merging, and the sharing policy itself. Several are proptests
 checking round-trip invariants against an independent reference implementation,
 because the inputs that break position maths are not the ones you would think to
 write down.
+
+`tests/smoke_real.py` runs against a real rust-analyzer, which is the part a
+mock server cannot prove. Two clients open the same file, one changes
+`pub size: u32` to `u64` without saving, and both then hover the struct in
+alternating order. One rust-analyzer process answers both:
+
+```
+client A:  pub struct Widget { pub size: u32 }    size = 4, align = 0x4
+client B:  pub struct Widget { pub size: u64 }    size = 8, align = 0x8
+```
+
+The layout line is the point. `size = 4` against `size = 8` is a type layout
+recomputed from each client's own source, not an echo of the text they sent. It
+needs a real server and about 30 seconds of indexing, so CI does not run it.
 
 The end-to-end suite drives the actual `drey serve` binary over stdio the way an
 editor would, and asserts the things that are easy to get wrong: that two

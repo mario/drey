@@ -42,6 +42,56 @@ jobs:
             exit 1
           fi
 
+  # The releases page is where people land from a changelog link or a search
+  # result, so it should exist as soon as the tag does, without waiting on the
+  # approval that gates publishing.
+  github_release:
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Take the notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 - "${TAG#v}" <<'PY'
+          import re, sys, pathlib
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          # The section for this version, up to the next heading of the same level.
+          m = re.search(
+              rf"^## \[?{re.escape(version)}\]?.*?$(.*?)(?=^## |\Z)",
+              text, re.M | re.S)
+          body = (m.group(1).strip() if m else "")
+          pathlib.Path("NOTES.md").write_text(body)
+          print(f"changelog section for {version}: {len(body)} chars")
+          PY
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # --generate-notes appends the commit list, so a missing or thin
+          # CHANGELOG section degrades to something useful rather than nothing.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file NOTES.md --title "drey ${TAG#v}"
+          else
+            gh release create "$TAG" \
+              --title "drey ${TAG#v}" \
+              --notes-file NOTES.md \
+              --generate-notes \
+              --verify-tag
+          fi
+
   publish:
     needs: verify
     runs-on: ubuntu-24.04

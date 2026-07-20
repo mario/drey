@@ -10,50 +10,56 @@ git push origin main --follow-tags
 
 `.github/workflows/release.yml` then runs, in order:
 
-1. `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`,
-   `cargo test`, and `cargo build && python3 tests/e2e.py`. A tag push skips the
-   pull-request run, so the gate runs again here.
-2. A check that the tag matches `version` in `Cargo.toml`. They disagree more
-   often than you would expect, and crates.io has no undo.
-3. A pause on the `crates-io` GitHub environment, which has a required
-   reviewer. Nothing publishes until someone approves the deployment.
-4. `cargo publish`, using a token obtained through trusted publishing.
+1. **verify**: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D
+   warnings`, `cargo test`, and `cargo build && python3 tests/e2e.py`. A tag
+   push skips the pull-request run, so the gate runs again here. It also checks
+   the tag against `version` in `Cargo.toml`; they disagree more often than you
+   would expect, and crates.io has no undo.
+2. **github_release**: creates the release from the matching `CHANGELOG.md`
+   section, falling back to generated notes. It does not wait for approval, so
+   the releases page is populated as soon as the tag exists.
+3. **publish**: pauses on the `crates-io` GitHub environment, which has a
+   required reviewer, then runs `cargo publish`.
+4. **homebrew**: only after publish succeeds, points the tap's formula at the
+   new tag and commits the recomputed checksum.
 
-No `CARGO_REGISTRY_TOKEN` secret is stored in the repository. GitHub mints an
-OIDC identity token for the job, `rust-lang/crates-io-auth-action` exchanges it
-for a crates.io token valid for about 30 minutes and scoped to this crate, and
-that token is discarded when the job ends.
+No `CARGO_REGISTRY_TOKEN` is stored anywhere. GitHub mints an OIDC identity
+token for the job, `rust-lang/crates-io-auth-action` exchanges it for a
+crates.io token valid for about 30 minutes and scoped to this crate, and that
+token dies with the job.
+
+Publishing with an API token is disabled on the crates.io side, so this workflow
+is the only way a version reaches the registry. A leaked personal token cannot
+publish drey, and neither can a maintainer in a hurry on a laptop.
 
 ## One-time setup
 
-**Repository visibility.** crates.io renders the README and links `repository`,
-so the repository has to be public before the first publish.
+Already done for this repository. Recorded because the next project needs it,
+and because someone will eventually ask why the tap has a deploy key.
 
-```sh
-gh repo edit mario/drey --visibility public --accept-visibility-change-consequences
-```
-
-**crates.io account.** Log in with GitHub and verify your email address.
-Publishing is rejected until the address is verified.
-
-**Trusted publishing.** On crates.io, under the crate's Settings → Trusted
-Publishing → Add:
+**Trusted publishing**, on crates.io under the crate's Settings, Trusted
+Publishing:
 
 | Field | Value |
 | --- | --- |
 | Repository owner | `mario` |
 | Repository name | `drey` |
-| Workflow filename | `release.yml` |
+| Workflow filename | `release.yml` (the filename, not a path) |
 | Environment | `crates-io` |
 
-**The GitHub environment.** Settings → Environments → New environment, named
-`crates-io`, with yourself as a required reviewer. This is what makes step 3
-above a gate rather than a formality.
+Trusted publishing is configured per crate, and a crate has to exist before you
+can attach one, so `0.1.0` was published by hand with a scoped token. That token
+is gone and API-token publishing is now disabled on the crate, which means this
+workflow is the only path to the registry.
 
-If crates.io requires the crate to exist before it will accept a trusted
-publishing config, bootstrap it with one local `cargo publish` using a token
-scoped to `publish-new`, then configure trusted publishing and delete the token.
-Every release after that goes through CI.
+**The GitHub environment**: Settings, Environments, named `crates-io`, with a
+required reviewer and a deployment branch policy limiting it to `v*` tags.
+
+**The tap deploy key**: an SSH key with write access to `mario/homebrew-drey`
+and nothing else, stored here as `HOMEBREW_TAP_DEPLOY_KEY`. `GITHUB_TOKEN`
+cannot reach another repository, and a personal access token would carry write
+access to everything the account can see in order to push one file.
+
 
 ## Version numbers
 

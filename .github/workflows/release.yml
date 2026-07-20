@@ -63,3 +63,53 @@ jobs:
       - run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  # A tap that lags the release is worse than no tap: `brew install` silently
+  # gives people an old version. This runs after publish so the two channels
+  # cannot disagree about what 0.x.y means.
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: mario/homebrew-drey
+          # A deploy key scoped to the tap alone. A personal access token would
+          # carry write access to every repository this account can reach.
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          persist-credentials: true
+
+      - name: Point the formula at the new tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          url="https://github.com/mario/drey/archive/refs/tags/${TAG}.tar.gz"
+
+          # Checksum the artifact Homebrew will actually download. Computing it
+          # from a local build would certify something users never receive.
+          sha=$(curl -fsSL "$url" | shasum -a 256 | awk '{print $1}')
+          test -n "$sha"
+
+          python3 - "$url" "$sha" <<'PY'
+          import re, sys
+          url, sha = sys.argv[1], sys.argv[2]
+          path = "Formula/drey.rb"
+          text = open(path).read()
+          text, n_url = re.subn(r'^  url ".*"$', f'  url "{url}"', text, flags=re.M)
+          text, n_sha = re.subn(r'^  sha256 ".*"$', f'  sha256 "{sha}"', text, flags=re.M)
+          if n_url != 1 or n_sha != 1:
+              sys.exit(f"expected one url and one sha256 line, replaced {n_url} and {n_sha}")
+          open(path, "w").write(text)
+          PY
+
+          git config user.name "drey release"
+          git config user.email "mario@djanic.com"
+          git add Formula/drey.rb
+          if git diff --cached --quiet; then
+            echo "formula already current for ${TAG}"
+            exit 0
+          fi
+          git commit -m "drey ${version}"
+          git push origin HEAD:main

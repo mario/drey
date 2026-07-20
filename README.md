@@ -123,10 +123,34 @@ else is broadcast.
 ## Install
 
 ```sh
+brew install mario/drey/drey     # macOS, brings its own Rust toolchain
+cargo install drey               # anywhere with a Rust toolchain
+```
+
+Then point a client at it and nothing else has to change:
+
+```sh
+drey serve rust-analyzer         # wherever the client currently names rust-analyzer
+drey status                      # what is running, and who is attached
+```
+
+Homebrew builds from source and declares Rust as a build-only dependency, so
+someone running jdtls or gopls never installs a toolchain by hand. It takes a
+couple of minutes; there are no prebuilt bottles yet.
+
+### Or interpose it on `PATH`, for every client at once
+
+Editing each client's config is fine for one editor and tedious for four. The
+install script puts wrapper scripts named after each language server on your
+`PATH`, so every client picks drey up without being reconfigured. It needs a
+clone, and it builds drey itself rather than reusing a copy you already have:
+
+```sh
+git clone https://github.com/mario/drey && cd drey
 ./scripts/install.sh
 ```
 
-That is the whole thing. It:
+It:
 
 1. builds drey and installs it to `~/.drey/bin/drey`
 2. finds every language server on your machine and records its **absolute**

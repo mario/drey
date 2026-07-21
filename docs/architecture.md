@@ -61,10 +61,45 @@ right client's text before serving that client's request, via a
 `Session` keeps its own shadow, so a client always sees its own text and never
 the other's.
 
-Swapping is not free. A client that trips the swap threshold inside the window
-gets promoted to its own backend, on the theory that two clients fighting over
-one file should stop paying the swap cost on every request. The constant and its
-reasoning are in `session.rs`.
+In full: every document carries two texts. `base` is what all clients agree it
+says, which for agent workloads is almost always what is on disk. `loaded` is
+what the server holds right now, meaning base overlaid with one client's unsaved
+edits. Each `Session` also keeps a shadow of every document it has open, and
+wherever a shadow differs from base, that difference is that client's overlay.
+
+While nobody has unsaved edits every document is clean, all clients are served
+at once, and nothing special happens. When a client with an overlay asks a
+question, drey pushes that client's state to the server as full-text
+`didChange` notifications and then forwards the request.
+
+This is affordable because a language server is already an incremental engine.
+Replacing one file's text invalidates only the queries that depend on that file;
+the rest of the index stands. A swap costs milliseconds of re-analysis rather
+than the gigabytes a second server would cost.
+
+Overlays are short-lived by design. A save collapses one: what a client writes
+to disk becomes the text everyone agrees on, so `didSave` advances base and the
+overlay disappears. Closing a file or disconnecting releases one too, with the
+server restored to base rather than left holding text nobody believes in. This
+is why the mechanism suits agents: they edit and save within seconds, so dirty
+state barely exists.
+
+Two details keep it honest. The common case stays free, since a client that is
+the only holder of a clean document writes straight through with its own
+incremental change forwarded untouched. And diagnostics are attributed, so those
+for a dirty document go only to the client whose state produced them, because
+they describe text nobody else wrote. Clean documents broadcast to every holder.
+
+Swapping is not free. A client causing more than 40 swaps in 10 seconds is
+thrashing, and at that point a private server is genuinely cheaper than swapping
+on every request, so drey promotes it to one and replays its documents. Ordinary
+editing never comes close. The constant and its reasoning are in `session.rs`.
+
+Index-level copy-on-write is not possible here and drey does not pretend
+otherwise: a salsa database lives in one process's heap, `fork(2)` on a
+thread-heavy server is unsafe, and salsa snapshots are read-only views of one
+revision rather than branches. State switching is the portable answer, and it
+works the same way for gopls, clangd and tsserver as it does for rust-analyzer.
 
 ## Things that were harder than they look
 
@@ -81,6 +116,12 @@ absolute path is not enough. See the comment above `spawn_path` in `backend.rs`.
 attached there is no obvious one to ask. The lowest client id answers on behalf
 of all of them. Clients configured differently would not be sharing in the first
 place, since `initializationOptions` is part of the key.
+
+**Workspaces that change mid-session.** `workspace/didChangeWorkspaceFolders`
+widens a server in place when the new roots are already covered, and forks when
+they are not. Widening in place is the whole point of containment matching, and
+forking is the only honest answer when a client asks for something the running
+server never indexed.
 
 **The socket is an execution surface.** Anyone who can write to it can make the
 daemon spawn a configured server. It is kept to the owning user, and that is a

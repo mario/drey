@@ -97,6 +97,40 @@ Three kinds live here, and the right one depends on what you touched:
   incremental engine, handed two clients' texts in turn, answers each from its
   own version. Run this one by hand before anything that touches document state.
 
+```sh
+cargo test                  # unit + CLI integration
+python3 tests/e2e.py        # end-to-end against the mock, over the real shim
+python3 tests/smoke_real.py # against a real rust-analyzer (not run in CI)
+```
+
+The unit tests cover framing (malformed, lowercase and missing `Content-Length`,
+bodies dribbled in a byte at a time), UTF-16 position maths (astral-plane
+characters, surrogate-pair snapping, CRLF, inverted ranges), request-id
+rewriting, config merging, and the sharing policy itself. Several are proptests
+checking round-trip invariants against an independent reference implementation,
+because the inputs that break position maths are not the ones you would think to
+write down.
+
+The end-to-end suite drives the actual `drey serve` binary over stdio the way an
+editor would, and asserts the things that are easy to get wrong: that two
+clients land on one process, that a sub-crate attaches to its workspace, that
+server-initiated requests are delivered, that identical content does not fork,
+that a divergent edit does *not* fork either, that each divergent client sees
+its own text and never the other's, and that swapping repeatedly between them
+stays consistent instead of drifting.
+
+`tests/smoke_real.py` has two clients open the same file, one changing
+`pub size: u32` to `u64` without saving, and both then hover the struct in
+alternating order. One rust-analyzer process answers both:
+
+```
+client A:  pub struct Widget { pub size: u32 }    size = 4, align = 0x4
+client B:  pub struct Widget { pub size: u64 }    size = 8, align = 0x8
+```
+
+The layout line is the point. `size = 4` against `size = 8` is a type layout
+recomputed from each client's own source, not an echo of the text they sent.
+
 A change to sharing policy needs an e2e test that fails without it. This is the
 one rule I will nitpick in review.
 

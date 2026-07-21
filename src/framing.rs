@@ -15,10 +15,11 @@ pub async fn read_message<R: AsyncRead + Unpin>(r: &mut BufReader<R>) -> Result<
         if line.is_empty() {
             break;
         }
-        if let Some(v) = line
-            .strip_prefix("Content-Length:")
-            .or_else(|| line.strip_prefix("content-length:"))
-        {
+        // Header names are case-insensitive. Matching two spellings and no
+        // others was arbitrary: `CONTENT-LENGTH:` fell through and the message
+        // was rejected as headerless, which is a confusing way to say
+        // "unexpected capitalisation".
+        if let Some(v) = split_header(line, "content-length") {
             let parsed: usize = v.trim().parse().context("bad Content-Length")?;
             // Two headers means the sender and we disagree about where this
             // message ends, and letting the last one win desynchronises the
@@ -40,6 +41,13 @@ pub async fn read_message<R: AsyncRead + Unpin>(r: &mut BufReader<R>) -> Result<
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf).await?;
     Ok(Some(buf))
+}
+
+/// Value of `name` if `line` is that header, matched without regard to case.
+/// `name` must already be lowercase.
+fn split_header<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let (field, value) = line.split_once(':')?;
+    field.trim().eq_ignore_ascii_case(name).then_some(value)
 }
 
 pub async fn write_message<W: AsyncWrite + Unpin>(w: &mut W, body: &[u8]) -> Result<()> {
@@ -66,8 +74,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tolerates_extra_headers_and_lowercase() {
-        let raw = b"content-length: 2\r\nContent-Type: application/vscode-jsonrpc\r\n\r\n{}";
+    async fn tolerates_extra_headers_and_any_casing() {
+        // Header names are case-insensitive, so all three spellings are the
+        // same header. Accepting two of them and not the third was arbitrary.
+        for name in ["Content-Length", "content-length", "CONTENT-LENGTH"] {
+            let raw = format!("{name}: 2\r\nContent-Type: application/vscode-jsonrpc\r\n\r\n{{}}");
+            let mut r = BufReader::new(raw.as_bytes());
+            assert_eq!(
+                read_message(&mut r).await.unwrap().unwrap(),
+                b"{}",
+                "failed for {name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_header_whose_name_merely_ends_in_content_length_is_not_one() {
+        // `split_once(':')` plus an exact name match, so a lookalike field is
+        // ignored rather than parsed as the length.
+        let raw = b"X-Content-Length: 999\r\nContent-Length: 2\r\n\r\n{}";
         let mut r = BufReader::new(&raw[..]);
         assert_eq!(read_message(&mut r).await.unwrap().unwrap(), b"{}");
     }

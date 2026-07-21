@@ -172,7 +172,16 @@ impl Config {
 /// `.git` is deliberately *not* a stopping marker: git worktrees are
 /// legitimately separate workspaces and must not be merged.
 pub fn widen_root(start: &Path, markers: &[String]) -> PathBuf {
-    let home = dirs::home_dir();
+    widen_root_bounded(start, markers, dirs::home_dir().as_deref())
+}
+
+/// The body of [`widen_root`], with the home directory passed in.
+///
+/// Tests need to place a fake home around a temporary directory. Setting `HOME`
+/// to do that is process-wide, and other tests spawn backends whose `PATH`
+/// sanitising reads the same variable, so it produced failures in unrelated
+/// tests depending on scheduling. Injection keeps the whole suite parallel.
+fn widen_root_bounded(start: &Path, markers: &[String], home: Option<&Path>) -> PathBuf {
     let mut best = start.to_path_buf();
     let mut cur = start;
 
@@ -184,7 +193,7 @@ pub fn widen_root(start: &Path, markers: &[String]) -> PathBuf {
         // itself as the widened root, which a stray marker in `$HOME` would
         // otherwise cause. `cur == home` stops a client that opened `$HOME`
         // directly from climbing above it into `/Users` or `/`.
-        if home.as_deref().is_some_and(|h| parent == h || cur == h) {
+        if home.is_some_and(|h| parent == h || cur == h) {
             break;
         }
         if markers.iter().any(|m| parent.join(m).exists()) {
@@ -455,22 +464,14 @@ mod tests {
     fn widen_root_stops_before_the_home_directory() {
         // A stray Cargo.toml in $HOME must not pull every project under it into
         // one backend indexing the whole home directory.
-        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let fake_home = tmp.path().join("home");
-        let project = fake_home.join("code/thing");
+        let home = tmp.path().join("home");
+        let project = home.join("code/thing");
         std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(fake_home.join("Cargo.toml"), "[workspace]").unwrap();
+        std::fs::write(home.join("Cargo.toml"), "[workspace]").unwrap();
         std::fs::write(project.join("Cargo.toml"), "[package]").unwrap();
 
-        let previous = std::env::var("HOME").ok();
-        std::env::set_var("HOME", &fake_home);
-        let widened = widen_root(&project, &["Cargo.toml".to_string()]);
-        match previous {
-            Some(h) => std::env::set_var("HOME", h),
-            None => std::env::remove_var("HOME"),
-        }
-
+        let widened = widen_root_bounded(&project, &["Cargo.toml".to_string()], Some(&home));
         assert_eq!(
             widened,
             project,
@@ -483,34 +484,45 @@ mod tests {
     fn opening_the_home_directory_itself_does_not_climb_above_it() {
         // The guard has to cover both sides. Testing only `parent == home`
         // would let a client that opened $HOME walk up into /Users or /.
-        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let above = tmp.path().join("above");
-        let fake_home = above.join("home");
-        std::fs::create_dir_all(&fake_home).unwrap();
+        let home = above.join("home");
+        std::fs::create_dir_all(&home).unwrap();
         std::fs::write(above.join("Cargo.toml"), "[workspace]").unwrap();
 
-        let previous = std::env::var("HOME").ok();
-        std::env::set_var("HOME", &fake_home);
-        let widened = widen_root(&fake_home, &["Cargo.toml".to_string()]);
-        match previous {
-            Some(h) => std::env::set_var("HOME", h),
-            None => std::env::remove_var("HOME"),
-        }
-
+        let widened = widen_root_bounded(&home, &["Cargo.toml".to_string()], Some(&home));
         assert_eq!(
             widened,
-            fake_home,
+            home,
             "widening escaped home to {}",
             widened.display()
         );
     }
 
     #[test]
-    fn widen_root_never_returns_the_filesystem_root() {
+    fn widening_from_the_filesystem_root_is_the_identity() {
+        // Named for what it proves. `/` has no parent, so the loop never runs.
+        // Whether `/` can be *adopted* as a widened root is a different
+        // question, and the test below is the one that answers it.
         assert_eq!(
             widen_root(Path::new("/"), &["Cargo.toml".to_string()]),
             Path::new("/")
         );
+    }
+
+    #[test]
+    fn widening_never_adopts_the_filesystem_root() {
+        // A marker at `/` must not pull every project on the machine into one
+        // backend. Home usually stops the walk first, but a workspace outside
+        // home (a mounted volume, /srv, a CI checkout) has no such guard.
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("elsewhere/home");
+        std::fs::create_dir_all(&home).unwrap();
+        let widened = widen_root_bounded(
+            Path::new("/usr"),
+            &["definitely-not-here".to_string()],
+            Some(&home),
+        );
+        assert_eq!(widened, Path::new("/usr"));
     }
 }

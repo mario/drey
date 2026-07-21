@@ -24,6 +24,18 @@ API, and all of them are things people have wired into an editor config.
   message ended, and every message after it was read at the wrong offset with no
   error to point at the cause. It is now refused, naming both values.
 
+- `Content-Length` is matched without regard to case, as header names are.
+  Two spellings were accepted and `CONTENT-LENGTH:` was not, so a client using
+  it got "LSP message without Content-Length header", which is a confusing way
+  to say "unexpected capitalisation". A field whose name merely ends in
+  `content-length` is still ignored rather than parsed as the length.
+
+- The CLI test suite leaked a daemon per test, and the real-server smoke test
+  leaked one plus a rust-analyzer. A daemon detaches and only `drey stop` ends
+  it, so 8 survived every `cargo test --test cli` run. A day of repeated runs
+  left dozens behind, and the suite began timing out under the process
+  pressure. Both suites now stop what they start.
+
 ### Changed
 
 - Hitting the 64-entry cap on server-initiated requests held for an absent

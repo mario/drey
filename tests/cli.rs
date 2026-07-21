@@ -38,6 +38,15 @@ impl Env {
         self.cmd().args(args).output().unwrap()
     }
 
+    /// The daemon a test autostarts is not its child: it detaches, and nothing
+    /// but `stop` ends it. Without this, every test that touches a daemon
+    /// leaves one running for the life of the machine. A day of repeated runs
+    /// left dozens behind here, and the suite started timing out under the
+    /// process pressure.
+    fn stop_daemon(&self) {
+        let _ = self.cmd().arg("stop").output();
+    }
+
     fn workspace(&self, rel: &str) -> std::path::PathBuf {
         let dir = self.tmp.path().join(rel);
         std::fs::create_dir_all(&dir).unwrap();
@@ -131,6 +140,12 @@ impl Client {
             "initialize",
             json!({ "rootUri": format!("file://{}", root.display()), "capabilities": {} }),
         )
+    }
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        self.stop_daemon();
     }
 }
 

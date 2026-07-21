@@ -233,6 +233,14 @@ def main():
                 client.proc.terminate()
             except OSError:
                 pass
+        # The daemon detaches and outlives this process; only `stop` ends it.
+        # Without this the test leaves a daemon (and a real rust-analyzer)
+        # running for the life of the machine.
+        subprocess.run(
+            [drey, "stop"],
+            env={**os.environ, "XDG_CONFIG_HOME": cfg},
+            capture_output=True,
+        )
         shutil.rmtree(ws, ignore_errors=True)
         shutil.rmtree(cfg, ignore_errors=True)
 

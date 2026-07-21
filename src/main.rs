@@ -7,6 +7,7 @@
 mod config;
 mod daemon;
 mod framing;
+mod install;
 mod msg;
 mod shim;
 mod text;
@@ -45,6 +46,24 @@ enum Command {
     Gc,
     /// Shut down every backend and the daemon.
     Stop,
+    /// Put drey in front of every language server on this machine, for every
+    /// LSP client at once: writes the user config file, a wrapper per
+    /// server into `~/.drey/bin`, and prepends that directory to `PATH`.
+    Install {
+        /// Print what would change and touch nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Replace files in `~/.drey/bin` that drey did not write.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Undo `install`: remove the wrappers and the `PATH` block. The config
+    /// file is left in place.
+    Uninstall {
+        /// Print what would change and touch nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[tokio::main]
@@ -63,6 +82,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Serve { server, args } => shim::serve(server, args).await,
         Command::Daemon => daemon::run(true).await,
+        Command::Install { dry_run, force } => install::install(dry_run, force),
+        Command::Uninstall { dry_run } => install::uninstall(dry_run),
         Command::Gc => {
             let r = shim::control(daemon::Control::Gc).await?;
             println!("released {} backend(s)", r["released"]);

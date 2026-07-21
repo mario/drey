@@ -47,10 +47,8 @@ Publishing:
 | Workflow filename | `release.yml` (the filename, not a path) |
 | Environment | `crates-io` |
 
-Trusted publishing is configured per crate, and a crate has to exist before you
-can attach one, so `0.1.0` was published by hand with a scoped token. That token
-is gone and API-token publishing is now disabled on the crate, which means this
-workflow is the only path to the registry.
+API-token publishing is disabled on the crate, so this workflow is the only path
+to the registry. There is no token to rotate, leak, or reach for in a hurry.
 
 **The GitHub environment**: Settings, Environments, named `crates-io`, with a
 required reviewer and a deployment branch policy limiting it to `v*` tags.
@@ -66,7 +64,7 @@ access to everything the account can see in order to push one file.
 Semver. Pre-1.0, a breaking change bumps the minor.
 
 The surfaces users integrate with are the CLI flags, the config file keys in
-`~/.config/drey/config.toml`, and the wrapper scripts `scripts/install.sh`
+the config file, and the wrapper scripts `drey install`
 writes onto `PATH`. A change to any of those is breaking, even though none of
 them is a Rust API.
 

@@ -58,12 +58,10 @@ than using memory.
 
 ### Divergent clients still share one server
 
-Every document carries two texts:
-
-- **base**, what all clients agree it says. For agent workloads this is almost
-  always what is on disk, and everyone agrees about that by definition.
-- **loaded**, what the server is holding right now: base, overlaid with one
-  client's unsaved edits.
+Every document carries two texts. **base** is what all clients agree it says,
+which for agent workloads is almost always what is on disk, and everyone agrees
+about that by definition. **loaded** is what the server is holding right now:
+base, overlaid with one client's unsaved edits.
 
 Each client also keeps a shadow of every document it has open. Wherever a
 client's shadow differs from base, that difference is its *overlay*.
@@ -86,14 +84,12 @@ the server restored to base rather than left holding text nobody believes in.
 This is why the mechanism suits agents so well: they edit and save within
 seconds, so dirty state barely exists.
 
-Two details keep it honest:
-
-- **The common case stays free.** A client that is the only holder of a clean
-  document writes straight through, and its own incremental change is forwarded
-  untouched. No swap, no full-text resend.
-- **Diagnostics are attributed.** Diagnostics for a dirty document go only to
-  the client whose state produced them, since they describe text nobody else
-  wrote. Clean documents broadcast to every holder as usual.
+Two details keep it honest. The common case stays free: a client that is the
+only holder of a clean document writes straight through, its own incremental
+change forwarded untouched, with no swap and no full-text resend. And
+diagnostics are attributed, so those for a dirty document go only to the client
+whose state produced them, since they describe text nobody else wrote. Clean
+documents broadcast to every holder as usual.
 
 Forking survives as the pressure valve. A client causing more than 40 swaps in
 10 seconds is thrashing, and at that point a private server is genuinely cheaper
@@ -140,24 +136,28 @@ couple of minutes; there are no prebuilt bottles yet.
 
 ### Or interpose it on `PATH`, for every client at once
 
-Editing each client's config is fine for one editor and tedious for four. The
-install script puts wrapper scripts named after each language server on your
-`PATH`, so every client picks drey up without being reconfigured. It needs a
-clone, and it builds drey itself rather than reusing a copy you already have:
+Editing each client's config is fine for one editor and tedious for four.
+`drey install` puts wrapper scripts named after each language server on your
+`PATH`, so every client picks drey up without being reconfigured. It works
+directly from a Homebrew or `cargo install` copy — no clone, no rebuild:
+
+```sh
+drey install            # --dry-run first, if you want to see the plan
+```
+
+It finds every language server on your machine and records its absolute path,
+resolving asdf shims to the real binary, writes those paths into the config, and
+puts a wrapper per server into `~/.drey/bin`. Each wrapper execs the drey binary
+you ran `install` from, so a Homebrew copy stays a Homebrew copy. Then it
+prepends that directory to `PATH` in both `~/.zshenv` and `~/.zshrc`.
+
+From source, `./scripts/install.sh` builds drey into `~/.drey/bin` first and
+then runs the same `drey install`:
 
 ```sh
 git clone https://github.com/mario/drey && cd drey
 ./scripts/install.sh
 ```
-
-It:
-
-1. builds drey and installs it to `~/.drey/bin/drey`
-2. finds every language server on your machine and records its **absolute**
-   path (resolving asdf shims to the real binary)
-3. writes `~/.config/drey/config.toml`
-4. writes a wrapper per server into `~/.drey/bin`, and prepends that directory
-   to `PATH` in **both** `~/.zshenv` and `~/.zshrc`
 
 Both files, deliberately. `.zshenv` is read by every zsh, including the
 non-interactive ones a GUI editor or launchd job uses to spawn a server, which
@@ -166,7 +166,8 @@ where version managers like asdf prepend their own shims and would otherwise end
 up in front of ours again.
 
 Every file it touches is backed up with a timestamp first, and nothing outside
-`~/.drey`, `~/.config/drey` and one marked block in your shell rc is modified.
+`~/.drey`, the config directory and one marked block in your shell rc is
+modified.
 
 Open a new shell, then check:
 
@@ -228,23 +229,25 @@ next time a client connects.
 ## Uninstall and revert
 
 ```sh
-./scripts/uninstall.sh
+drey uninstall          # --dry-run to see what it would touch
 ```
 
-It stops the daemon and every server under it, removes the wrappers, takes the
-marked block back out of your shell rc (backing the file up first), removes
-`~/.config/drey` and the runtime state, and removes the binary. Open a new shell
-and `which rust-analyzer` points at the real one again.
+It removes the wrappers — only files carrying drey's marker comment, never
+anything else in `~/.drey/bin` — and takes the marked block back out of your
+shell rc, backing the file up first. The config file is left in
+place, since it is the only thing that took effort to produce; delete it
+yourself if you want it gone. Open a new shell and `which rust-analyzer` points
+at the real one again.
 
-Flags for a partial revert:
+If you installed from source, `./scripts/uninstall.sh` does the same and also
+stops the daemon and removes the binary:
 
 ```sh
-./scripts/uninstall.sh --keep-config    # leave config.toml for later
+./scripts/uninstall.sh
 ./scripts/uninstall.sh --keep-binary    # keep drey, remove only the wrappers
 ```
 
-The script is idempotent and safe to run twice, or after a half-finished
-install.
+Both are idempotent and safe to run twice, or after a half-finished install.
 
 ### Reverting by hand
 
@@ -300,8 +303,8 @@ tail -f ~/.local/state/drey/daemon.log       # Linux
 Run with `DREY_LOG=drey=debug` for per-message detail.
 
 **A server is missing after install.** The installer only wraps what it found on
-`PATH` at the time. Install the server, then re-run `./scripts/install.sh`; it
-is safe to run repeatedly.
+`PATH` at the time. Install the server, then re-run `drey install`; it is safe
+to run repeatedly.
 
 **Memory did not drop.** Check `drey status`: if you see several backends for
 what you thought was one workspace, the roots differ. Git worktrees are separate
@@ -309,8 +312,11 @@ by design. Different `initializationOptions` also split, on purpose.
 
 ## Configure
 
-`~/.config/drey/config.toml`. Builtins cover rust-analyzer, gopls, typescript,
-pyright, ruff, clangd, zls, lua, elixir and jdtls; anything here overrides them.
+`drey install` writes the config for you. To edit it by hand, the path is
+`~/Library/Application Support/drey/config.toml` on macOS and
+`~/.config/drey/config.toml` on Linux, or wherever `DREY_CONFIG` points if you
+set it. Builtins cover rust-analyzer, gopls, typescript, pyright, ruff, clangd,
+zls, lua, elixir and jdtls; anything in the file overrides them.
 
 ```toml
 [server.rust-analyzer]
@@ -368,22 +374,22 @@ stays consistent instead of drifting.
 Early. It works and it is tested, but it has been exercised against a mock
 server far more than against every real one.
 
-Known limits:
+The state swapping rests on an assumption worth stating plainly. It needs the
+server to process messages in order, which every LSP server must, and to either
+snapshot per request (rust-analyzer does) or answer before the next swap
+arrives. A server that batches work across messages could in principle answer
+against a state that has since moved. If you hit that, lowering the thrash
+threshold makes such a client fork instead.
 
-- State swaps assume the server processes messages in order, which every LSP
-  server must, and that it either snapshots per request (rust-analyzer does) or
-  answers before the next swap arrives. A server that batches work across
-  messages could in principle answer against a state that has since moved. If
-  you hit that, the thrash threshold can be lowered so such a client forks
-  instead.
-- A swap resends full document text rather than an incremental edit. That is
-  cheap for source files and would not be for very large generated ones.
-- `workspace/didChangeWorkspaceFolders` widens a server in place when the new
-  roots are already covered, and forks when they are not.
-- Server-initiated requests are answered by one client on behalf of all of them.
-  If two clients are configured differently for the same workspace, the lowest
-  client id decides. Configure differently and they will not share anyway, since
-  `initializationOptions` is part of the key.
+A swap also resends full document text rather than an incremental edit. That is
+cheap for source files and would not be for very large generated ones.
+
+Two smaller things. `workspace/didChangeWorkspaceFolders` widens a server in
+place when the new roots are already covered and forks when they are not. And
+server-initiated requests are answered by one client on behalf of all of them,
+with the lowest client id deciding; clients configured differently for the same
+workspace would not be sharing anyway, since `initializationOptions` is part of
+the key.
 
 ## Prior art
 

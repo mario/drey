@@ -25,7 +25,7 @@ first time a shim cannot find it.
 | `framing.rs` | LSP base protocol: `Content-Length` headers over a byte stream. |
 | `msg.rs` | JSON-RPC helpers, and the request-id namespacing described below. |
 | `text.rs` | Document text plus UTF-16 position maths. |
-| `config.rs` | Builtins for ten servers, overridden by `~/.config/drey/config.toml`. |
+| `config.rs` | Builtins for ten servers, overridden by the user config. `config_path()` is platform-dependent; `DREY_CONFIG` overrides it. |
 | `daemon/mod.rs` | Socket, connection accept loop, root extraction and widening. |
 | `daemon/registry.rs` | The backend pool, and the policy for who shares what. |
 | `daemon/backend.rs` | One real server process, its `BackendKey`, and the shared documents. |

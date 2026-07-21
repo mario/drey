@@ -5,13 +5,21 @@ Notable changes, newest first. Format follows
 where pre-1.0 means a breaking change bumps the minor.
 
 The surfaces that count as breaking are the CLI flags, the config file keys, and
-the wrapper scripts `scripts/install.sh` puts on your `PATH`. None of them is a
+the wrapper scripts `drey install` puts on your `PATH`. None of them is a
 Rust API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.1]
+
 ### Added
 
+- `drey install` and `drey uninstall`, so a binary from Homebrew or
+  `cargo install` can set up the `PATH` interposition without cloning the
+  repository and rebuilding. The wrappers exec whichever drey binary you ran
+  `install` from, rather than assuming `~/.drey/bin/drey`. Both take
+  `--dry-run`; `install` takes `--force` to replace files in `~/.drey/bin` that
+  drey did not write.
 - Apache License 2.0, replacing the proprietary licence.
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, and a `NOTICE` file.
 - `docs/architecture.md` explaining the three ideas the design rests on, and
@@ -23,6 +31,15 @@ Rust API, and all of them are things people have wired into an editor config.
   publishing rather than a stored token.
 - Property tests (proptest) over frame round-trips, UTF-16 position maths, and
   incremental edit application against a reference implementation.
+
+### Changed
+
+- `scripts/install.sh` and `scripts/uninstall.sh` are thin wrappers now: they
+  build or remove the binary and delegate the rest to the new subcommands. The
+  discovery, config, wrapper and `PATH` logic is no longer duplicated in shell.
+- `drey uninstall` leaves `~/.config/drey/config.toml` in place and says so,
+  where the old script deleted it. It also removes only files carrying drey's
+  marker comment from `~/.drey/bin`.
 
 ## [0.1.0]
 

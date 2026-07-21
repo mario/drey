@@ -17,6 +17,11 @@ use crate::framing::{read_message, write_message};
 use crate::msg;
 use crate::text::Text;
 
+/// How many server-initiated requests to hold while no client is attached.
+/// Past this, the server gets an error rather than the daemon growing without
+/// bound. High enough that a normal startup burst never reaches it.
+const MAX_PENDING_REQUESTS: usize = 64;
+
 /// Identity of a backend. Two clients share a process only if these agree,
 /// except that roots also match by containment: see [`BackendKey::covers`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -398,13 +403,21 @@ impl Backend {
                 let mut st = st;
                 // Cap the queue so a server that talks to nobody forever cannot
                 // grow the daemon without bound.
-                if st.pending_requests.len() < 64 {
+                if st.pending_requests.len() < MAX_PENDING_REQUESTS {
                     tracing::debug!(
                         method = msg::method(&v),
                         "holding server request until a client attaches"
                     );
                     st.pending_requests.push(v);
                 } else {
+                    // At warn, not debug: a server whose requests are being
+                    // refused is misconfigured or wedged, and the logs are the
+                    // only place that shows. Silence here reads as health.
+                    tracing::warn!(
+                        method = msg::method(&v),
+                        queued = MAX_PENDING_REQUESTS,
+                        "no client has attached; refusing this server request"
+                    );
                     self.send(&msg::error_response(
                         v["id"].clone(),
                         -32603,

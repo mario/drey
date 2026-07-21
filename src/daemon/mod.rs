@@ -281,6 +281,51 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// Roots are canonicalised before they become a `BackendKey`, so two
+    /// clients naming the same directory differently share one backend. The
+    /// assertion is on `covers`, not on the strings: `covers` is what actually
+    /// decides sharing, and it compares raw path text.
+    #[test]
+    fn a_root_named_via_symlink_or_dot_dot_shares_one_backend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real/ws");
+        std::fs::create_dir_all(real.join("src")).unwrap();
+
+        let markers: Vec<String> = Vec::new();
+        let key = |params: Value| {
+            crate::daemon::backend::BackendKey::new(
+                "mock",
+                resolve_roots(&params, None, &markers),
+                None,
+            )
+        };
+
+        let direct = key(json!({ "rootUri": format!("file://{}", real.display()) }));
+        let dotted = key(json!({
+            "rootUri": format!("file://{}", real.join("src/..").display())
+        }));
+        assert!(
+            direct.covers(&dotted) && dotted.covers(&direct),
+            "`..` did not collapse: {:?} vs {:?}",
+            direct.roots,
+            dotted.roots
+        );
+
+        #[cfg(unix)]
+        {
+            let link = tmp.path().join("link");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            let via_link = key(json!({ "rootUri": format!("file://{}", link.display()) }));
+            assert!(
+                direct.covers(&via_link) && via_link.covers(&direct),
+                "a symlinked root forked a backend: {:?} vs {:?}",
+                direct.roots,
+                via_link.roots
+            );
+        }
+    }
+
     use super::*;
     use serde_json::json;
 

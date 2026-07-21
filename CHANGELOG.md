@@ -10,6 +10,34 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.2]
+
+### Fixed
+
+- Root widening could climb to `$HOME`. A stray `Cargo.toml`, `package.json` or
+  `go.mod` in your home directory merged every project underneath it into one
+  backend indexing the entire home directory. The walk now stops below home in
+  both directions: it will not adopt home as a root, and a client that opened
+  `$HOME` itself will not climb into `/Users` or `/`.
+- A duplicate `Content-Length` header let the last value win, which
+  desynchronised the stream: the sender and drey then disagreed about where the
+  message ended, and every message after it was read at the wrong offset with no
+  error to point at the cause. It is now refused, naming both values.
+
+### Changed
+
+- Hitting the 64-entry cap on server-initiated requests held for an absent
+  client now logs at warn rather than passing silently. A server whose requests
+  are being refused is wedged or misconfigured, and the log was the only place
+  that would have shown it.
+
+### Note for anyone upgrading
+
+If you had a marker file directly in `$HOME`, projects that previously collapsed
+into a single backend now get one each. That is more memory and more indexing on
+first use, and it is the correct behaviour: those projects were never one
+workspace. Nothing else changes, and no configuration is affected.
+
 ## [0.1.1]
 
 ### Added

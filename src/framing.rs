@@ -19,7 +19,15 @@ pub async fn read_message<R: AsyncRead + Unpin>(r: &mut BufReader<R>) -> Result<
             .strip_prefix("Content-Length:")
             .or_else(|| line.strip_prefix("content-length:"))
         {
-            len = Some(v.trim().parse().context("bad Content-Length")?);
+            let parsed: usize = v.trim().parse().context("bad Content-Length")?;
+            // Two headers means the sender and we disagree about where this
+            // message ends, and letting the last one win desynchronises the
+            // stream silently: every message after it is read at the wrong
+            // offset. Refuse instead, while the error still points at a cause.
+            if let Some(first) = len {
+                bail!("two Content-Length headers in one message ({first} then {parsed})");
+            }
+            len = Some(parsed);
         }
     }
     let Some(len) = len else {
@@ -172,10 +180,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_last_content_length_header_wins() {
+    async fn two_content_length_headers_are_refused() {
+        // This used to let the last one win. A peer that sends two disagrees
+        // with us about where the message ends, so every message after it is
+        // read at the wrong offset: a silent desync rather than a loud error.
         let raw = b"Content-Length: 99\r\nContent-Length: 2\r\n\r\n{}";
         let mut r = BufReader::new(&raw[..]);
-        assert_eq!(read_message(&mut r).await.unwrap().unwrap(), b"{}");
+        let err = read_message(&mut r).await.unwrap_err().to_string();
+        assert!(err.contains("two Content-Length headers"), "{err}");
     }
 
     #[tokio::test]

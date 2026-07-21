@@ -163,9 +163,14 @@ impl Config {
 /// of the server's markers. Two clients that opened different crates of the
 /// same Cargo workspace therefore land on one backend and one index.
 ///
-/// The walk stops at the home directory and at a filesystem boundary marker
-/// (`.git`) is *not* used to stop, because git worktrees are legitimately
-/// separate workspaces and must not be merged.
+/// The walk never reaches the home directory. A stray `Cargo.toml` or
+/// `package.json` in `$HOME` is common enough, and widening to it would merge
+/// every project underneath into one backend indexing the entire home
+/// directory. Stopping short costs a little sharing in a case nobody has;
+/// not stopping costs everything in a case people really do have.
+///
+/// `.git` is deliberately *not* a stopping marker: git worktrees are
+/// legitimately separate workspaces and must not be merged.
 pub fn widen_root(start: &Path, markers: &[String]) -> PathBuf {
     let home = dirs::home_dir();
     let mut best = start.to_path_buf();
@@ -175,7 +180,11 @@ pub fn widen_root(start: &Path, markers: &[String]) -> PathBuf {
         if parent.as_os_str().is_empty() {
             break;
         }
-        if home.as_deref().is_some_and(|h| cur == h) {
+        // Both sides matter. `parent == home` stops the loop adopting home
+        // itself as the widened root, which a stray marker in `$HOME` would
+        // otherwise cause. `cur == home` stops a client that opened `$HOME`
+        // directly from climbing above it into `/Users` or `/`.
+        if home.as_deref().is_some_and(|h| parent == h || cur == h) {
             break;
         }
         if markers.iter().any(|m| parent.join(m).exists()) {
@@ -439,6 +448,61 @@ mod tests {
         assert_eq!(
             widen_root(&inner, &["marker".to_string()]),
             tmp.path().join("a")
+        );
+    }
+
+    #[test]
+    fn widen_root_stops_before_the_home_directory() {
+        // A stray Cargo.toml in $HOME must not pull every project under it into
+        // one backend indexing the whole home directory.
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_home = tmp.path().join("home");
+        let project = fake_home.join("code/thing");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(fake_home.join("Cargo.toml"), "[workspace]").unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]").unwrap();
+
+        let previous = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &fake_home);
+        let widened = widen_root(&project, &["Cargo.toml".to_string()]);
+        match previous {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(
+            widened,
+            project,
+            "widening reached {} instead of stopping below home",
+            widened.display()
+        );
+    }
+
+    #[test]
+    fn opening_the_home_directory_itself_does_not_climb_above_it() {
+        // The guard has to cover both sides. Testing only `parent == home`
+        // would let a client that opened $HOME walk up into /Users or /.
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let above = tmp.path().join("above");
+        let fake_home = above.join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        std::fs::write(above.join("Cargo.toml"), "[workspace]").unwrap();
+
+        let previous = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &fake_home);
+        let widened = widen_root(&fake_home, &["Cargo.toml".to_string()]);
+        match previous {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(
+            widened,
+            fake_home,
+            "widening escaped home to {}",
+            widened.display()
         );
     }
 

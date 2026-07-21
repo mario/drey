@@ -10,6 +10,21 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.3]
+
+### Fixed
+
+- `Content-Length` is matched without regard to case, as header names are. Two
+  spellings were accepted and `CONTENT-LENGTH:` was not, so a client using it
+  got "LSP message without Content-Length header", a confusing way to report
+  unexpected capitalisation. A field whose name merely ends in `content-length`
+  is still ignored rather than parsed as the length.
+- The test suites leaked daemons. A daemon detaches and only `drey stop` ends
+  it, and the CLI suite never stopped what it started, so 8 survived every run.
+  Dozens accumulated here over a day, the oldest at 18 hours, and the suite
+  began timing out under the process pressure. The real-server smoke test
+  leaked a daemon and a rust-analyzer too. Both now clean up.
+
 ## [0.1.2]
 
 ### Fixed
@@ -23,18 +38,6 @@ API, and all of them are things people have wired into an editor config.
   desynchronised the stream: the sender and drey then disagreed about where the
   message ended, and every message after it was read at the wrong offset with no
   error to point at the cause. It is now refused, naming both values.
-
-- `Content-Length` is matched without regard to case, as header names are.
-  Two spellings were accepted and `CONTENT-LENGTH:` was not, so a client using
-  it got "LSP message without Content-Length header", which is a confusing way
-  to say "unexpected capitalisation". A field whose name merely ends in
-  `content-length` is still ignored rather than parsed as the length.
-
-- The CLI test suite leaked a daemon per test, and the real-server smoke test
-  leaked one plus a rust-analyzer. A daemon detaches and only `drey stop` ends
-  it, so 8 survived every `cargo test --test cli` run. A day of repeated runs
-  left dozens behind, and the suite began timing out under the process
-  pressure. Both suites now stop what they start.
 
 ### Changed
 

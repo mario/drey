@@ -10,6 +10,31 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.4]
+
+### Fixed
+
+- Servers managed by asdf are launched through `asdf exec` again, instead of
+  the path `asdf which` reports. That path is often not a program: for
+  asdf-managed Rust it is a rustup proxy that needs `RUSTUP_HOME` pointing
+  inside the asdf installation, and only `asdf exec` sets it. Unwrapped, the
+  proxy searched `~/.rustup`, found no default toolchain there, and exited
+  during initialize, so every Rust client silently had no language server at
+  all. gopls, ruff, pyright and ruby-lsp resolve through the same shims and
+  were affected wherever their runtime needed the environment too.
+
+  Unwrapping was meant to stop every workspace from pinning to whatever
+  version asdf picked at daemon start. Recording `asdf exec` fixes that
+  properly rather than sidestepping it: the daemon already spawns servers with
+  the workspace root as the working directory, which is what asdf dispatches
+  on, so each workspace now gets the version its `.tool-versions` asks for.
+
+- A server that dies during initialize now reports what it printed on stderr.
+  That output went to the log at debug level, so the usual causes (a missing
+  toolchain, an unknown flag, a broken shim) produced `exited during
+  initialize` and nothing else. Diagnosing the bug above meant turning up
+  `DREY_LOG` and reproducing it; the message now carries the reason.
+
 ## [0.1.3]
 
 ### Fixed

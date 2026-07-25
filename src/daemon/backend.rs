@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,39 @@ use crate::text::Text;
 /// Past this, the server gets an error rather than the daemon growing without
 /// bound. High enough that a normal startup burst never reaches it.
 const MAX_PENDING_REQUESTS: usize = 64;
+
+/// How many trailing stderr lines to keep for the failure message. Enough for
+/// a short error plus the hint that usually follows it, few enough that a
+/// chatty server cannot turn one failure into a wall of text.
+const STDERR_KEPT: usize = 10;
+
+/// The tail of a server's stderr, formatted for an error message, or empty if
+/// it said nothing.
+///
+/// The reader is a separate task, so on a fast exit the lines may not have
+/// been drained yet even though the pipe is closed. Wait briefly rather than
+/// report silence: a server that died with a message and appears to have died
+/// without one is the worst of both.
+async fn said(recent: &Arc<Mutex<VecDeque<String>>>) -> String {
+    let peek = || {
+        recent
+            .lock()
+            .map(|b| b.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let mut lines = peek();
+    for _ in 0..20 {
+        if !lines.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        lines = peek();
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("; it said: {}", lines.join(" / "))
+}
 
 /// Identity of a backend. Two clients share a process only if these agree,
 /// except that roots also match by containment: see [`BackendKey::covers`].
@@ -257,12 +290,26 @@ impl Backend {
 
         // Server stderr is diagnostics for us, never protocol. Keep it out of
         // every client's stream and in our log.
+        //
+        // Also keep the last few lines. A server that dies during initialize
+        // has almost always explained itself there, and that explanation is
+        // the whole diagnosis: a missing toolchain, a bad flag, a broken
+        // version-manager shim. Logging it at debug meant nobody saw it
+        // without turning up DREY_LOG and reproducing.
         let label = key.label();
+        let recent = Arc::new(Mutex::new(VecDeque::<String>::new()));
+        let sink = recent.clone();
         tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 tracing::debug!(server = %label, "{line}");
+                if let Ok(mut buf) = sink.lock() {
+                    if buf.len() == STDERR_KEPT {
+                        buf.pop_front();
+                    }
+                    buf.push_back(line);
+                }
             }
         });
 
@@ -277,12 +324,20 @@ impl Backend {
 
         let init_result = loop {
             let Some(raw) = read_message(&mut stdout).await? else {
-                anyhow::bail!("`{}` exited during initialize", cfg.command);
+                anyhow::bail!(
+                    "`{}` exited during initialize{}",
+                    cfg.command,
+                    said(&recent).await,
+                );
             };
             let v: Value = serde_json::from_slice(&raw)?;
             if v.get("id") == Some(&init_id) {
                 if let Some(err) = v.get("error") {
-                    anyhow::bail!("`{}` failed to initialize: {err}", cfg.command);
+                    anyhow::bail!(
+                        "`{}` failed to initialize: {err}{}",
+                        cfg.command,
+                        said(&recent).await,
+                    );
                 }
                 break v.get("result").cloned().unwrap_or(Value::Null);
             }

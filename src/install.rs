@@ -113,7 +113,22 @@ pub struct Found {
     pub name: String,
     /// Absolute path to the real executable.
     pub command: PathBuf,
+    /// Arguments that belong to the launcher rather than the client, as with
+    /// `asdf exec <server>`. Empty for a server we can exec directly.
+    pub args: Vec<String>,
     pub root_markers: Vec<String>,
+}
+
+impl Found {
+    /// How this server will actually be launched, for display.
+    fn launch_line(&self) -> String {
+        let mut s = self.command.display().to_string();
+        for a in &self.args {
+            s.push(' ');
+            s.push_str(a);
+        }
+        s
+    }
 }
 
 /// Where the wrapper scripts go. Hardcoded rather than XDG-derived because the
@@ -138,7 +153,10 @@ pub fn install(dry_run: bool, force: bool) -> Result<()> {
 
     let found = discover(&bin_dir);
     for f in &found {
-        say(&format!("found {} -> {}", f.name, f.command.display()));
+        // Print the arguments too. Without them an asdf-managed server reads
+        // as "found rust-analyzer -> /usr/local/bin/asdf", which looks like a
+        // bug rather than the launcher it is.
+        say(&format!("found {} -> {}", f.name, f.launch_line()));
     }
     if found.is_empty() {
         say("no language servers found on PATH; nothing to interpose");
@@ -290,9 +308,11 @@ fn discover(bin_dir: &Path) -> Vec<Found> {
         .iter()
         .filter_map(|k| {
             let hit = resolve_on_path(k.binary, &entries, bin_dir)?;
+            let (command, args) = resolve_asdf_shim(k.binary, hit, &entries, bin_dir);
             Some(Found {
                 name: k.name.to_string(),
-                command: resolve_asdf_shim(k.binary, hit),
+                command,
+                args,
                 root_markers: k.root_markers.iter().map(|s| s.to_string()).collect(),
             })
         })
@@ -328,24 +348,37 @@ fn is_executable(path: &Path) -> bool {
 }
 
 /// asdf puts a shell shim on `PATH` that dispatches by the current directory.
-/// Recording the shim would make every workspace resolve to whatever version
-/// asdf picked at daemon start, so ask asdf for the real binary instead.
-fn resolve_asdf_shim(binary: &str, path: PathBuf) -> PathBuf {
+///
+/// Recording the shim path itself is wrong: it is a bash script that runs
+/// whatever `asdf` is on `PATH` at spawn time, and the daemon's `PATH` is not
+/// the one the client had. Unwrapping it to the path `asdf which` reports is
+/// also wrong, and was the older bug here: for asdf-managed rust that path is
+/// a rustup proxy which needs `RUSTUP_HOME` pointing inside the asdf install,
+/// and only `asdf exec` sets it. Unwrapped, the proxy searched `~/.rustup`,
+/// found no default toolchain, and exited during initialize. Unwrapping also
+/// pinned the version chosen at install time.
+///
+/// So keep asdf in the loop and record `asdf exec <binary>`, by absolute path
+/// so the daemon's `PATH` cannot matter. The daemon spawns servers with the
+/// workspace root as the working directory, which is exactly what asdf
+/// dispatches on, so each workspace still gets the version its `.tool-versions`
+/// asks for.
+fn resolve_asdf_shim(
+    binary: &str,
+    path: PathBuf,
+    entries: &[PathBuf],
+    skip: &Path,
+) -> (PathBuf, Vec<String>) {
     if !path.to_string_lossy().contains("/.asdf/shims/") {
-        return path;
+        return (path, Vec::new());
     }
-    let Ok(out) = std::process::Command::new("asdf")
-        .arg("which")
-        .arg(binary)
-        .output()
-    else {
-        return path;
-    };
-    let real = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if out.status.success() && !real.is_empty() {
-        PathBuf::from(real)
-    } else {
-        path
+    // If asdf is not on PATH under its own name we cannot write it absolutely.
+    // Fall back to the shim, which finds asdf itself: it depends on the
+    // daemon's PATH, but it still goes through `asdf exec` and so still gets
+    // the environment. That is the part that matters.
+    match resolve_on_path("asdf", entries, skip) {
+        Some(asdf) => (asdf, vec!["exec".to_string(), binary.to_string()]),
+        None => (path, Vec::new()),
     }
 }
 
@@ -367,6 +400,10 @@ pub fn render_config(found: &[Found]) -> String {
     for f in sorted.values() {
         out.push_str(&format!("[server.{}]\n", f.name));
         out.push_str(&format!("command = \"{}\"\n", f.command.display()));
+        if !f.args.is_empty() {
+            let args: Vec<String> = f.args.iter().map(|a| format!("\"{a}\"")).collect();
+            out.push_str(&format!("args = [{}]\n", args.join(", ")));
+        }
         if !f.root_markers.is_empty() {
             let markers: Vec<String> = f.root_markers.iter().map(|m| format!("\"{m}\"")).collect();
             out.push_str(&format!("root_markers = [{}]\n", markers.join(", ")));
@@ -658,10 +695,75 @@ mod tests {
         );
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn an_asdf_shim_is_recorded_as_asdf_exec_rather_than_unwrapped() {
+        // The regression this guards: unwrapping the shim to the binary asdf
+        // reports gives a path that only runs under asdf's environment. For
+        // rust that is a rustup proxy needing RUSTUP_HOME, and without it the
+        // server exits during initialize.
+        let tmp = tempfile::tempdir().unwrap();
+        let shims = tmp.path().join(".asdf/shims");
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&shims).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let shim = touch_exe(&shims, "rust-analyzer");
+        let asdf = touch_exe(&bin, "asdf");
+        let entries = vec![shims, bin];
+
+        let (command, args) =
+            resolve_asdf_shim("rust-analyzer", shim, &entries, Path::new("/nope"));
+        assert_eq!(command, asdf);
+        assert_eq!(args, ["exec", "rust-analyzer"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_server_outside_asdf_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = touch_exe(tmp.path(), "gopls");
+        let entries = vec![tmp.path().to_path_buf()];
+        let (command, args) =
+            resolve_asdf_shim("gopls", real.clone(), &entries, Path::new("/nope"));
+        assert_eq!(command, real);
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_asdf_shim_survives_asdf_being_unfindable() {
+        // Recording the shim still routes through `asdf exec`, so the
+        // environment is intact. Only the absolute path is lost.
+        let tmp = tempfile::tempdir().unwrap();
+        let shims = tmp.path().join(".asdf/shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        let shim = touch_exe(&shims, "ruby-lsp");
+        let entries = vec![shims];
+        let (command, args) =
+            resolve_asdf_shim("ruby-lsp", shim.clone(), &entries, Path::new("/x"));
+        assert_eq!(command, shim);
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn launcher_arguments_reach_the_generated_config() {
+        let text = render_config(&[Found {
+            name: "rust-analyzer".to_string(),
+            command: PathBuf::from("/usr/local/bin/asdf"),
+            args: vec!["exec".to_string(), "rust-analyzer".to_string()],
+            root_markers: vec!["Cargo.toml".to_string()],
+        }]);
+        let cfg: crate::config::Config = toml::from_str(&text).unwrap();
+        let ra = &cfg.server["rust-analyzer"];
+        assert_eq!(ra.command, "/usr/local/bin/asdf");
+        assert_eq!(ra.args, ["exec", "rust-analyzer"]);
+    }
+
     fn found(name: &str, command: &str, markers: &[&str]) -> Found {
         Found {
             name: name.to_string(),
             command: PathBuf::from(command),
+            args: Vec::new(),
             root_markers: markers.iter().map(|s| s.to_string()).collect(),
         }
     }

@@ -5,8 +5,16 @@ The README covers the one-line install. This is everything after that.
 ## What `drey install` does
 
 It finds every language server on your machine and records its absolute path,
-resolving asdf shims to the real binary, writes those paths into the config, and
-puts a wrapper per server into `~/.drey/bin`. Each wrapper execs the drey binary
+writes those paths into the config, and puts a wrapper per server into
+`~/.drey/bin`.
+
+A server behind an asdf shim is recorded as `asdf exec <server>`, with asdf's
+own absolute path. The shim is not unwrapped to the binary underneath, because
+that binary is frequently a launcher rather than a program: asdf-managed Rust
+puts a rustup proxy there, and it only finds its toolchain when `asdf exec` has
+set `RUSTUP_HOME`. Going through asdf also keeps per-workspace versions
+working, since the daemon runs each server with the workspace root as its
+working directory and that is what asdf dispatches on. Each wrapper execs the drey binary
 you ran `install` from, so a Homebrew copy stays a Homebrew copy. Then it
 prepends that directory to `PATH` in both `~/.zshenv` and `~/.zshrc`.
 
@@ -172,6 +180,19 @@ tail -f ~/.local/state/drey/daemon.log       # Linux
 ```
 
 Run with `DREY_LOG=drey=debug` for per-message detail.
+
+**A language server never comes up, and `drey status` shows no backend for it.**
+The server is probably exiting during initialize. The daemon logs that with
+whatever the server printed on stderr, which is usually the whole answer:
+
+```sh
+grep "during initialize" ~/Library/Caches/drey/daemon.log
+```
+
+If the `command` in your config is a version-manager shim or a launcher rather
+than a real binary, run it by hand with an empty environment and see what it
+says. Re-running `drey install` rewrites the entry the way drey would choose
+it now.
 
 **A server is missing after install.** `drey install` only wraps what it found
 on `PATH` at the time. Install the server, then re-run it.

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -26,6 +26,12 @@ const MAX_PENDING_REQUESTS: usize = 64;
 /// a short error plus the hint that usually follows it, few enough that a
 /// chatty server cannot turn one failure into a wall of text.
 const STDERR_KEPT: usize = 10;
+
+/// How long a server gets to answer `initialize`. Every real server replies in
+/// well under a second and does its indexing afterwards, so anything past this
+/// is wedged, not slow. Without a bound, a server caught in a shim loop keeps
+/// every client on that workspace waiting for as long as the daemon lives.
+const INIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The tail of a server's stderr, formatted for an error message, or empty if
 /// it said nothing.
@@ -118,8 +124,45 @@ impl BackendKey {
     }
 }
 
+/// The shim directories belonging to `command`, when `command` is a version
+/// manager drey launches servers through.
+///
+/// Only the manager we are actually invoking is considered. Someone else's
+/// shims on `PATH` are how a server finds its own toolchain, and stripping
+/// those would break more than it fixes.
+fn shim_dirs_for(command: &str) -> Vec<std::path::PathBuf> {
+    let name = std::path::Path::new(command)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let home = dirs::home_dir();
+
+    let from_env = |var: &str, suffix: &str| -> Option<std::path::PathBuf> {
+        std::env::var_os(var).map(|v| std::path::PathBuf::from(v).join(suffix))
+    };
+
+    match name.as_str() {
+        "asdf" => [
+            from_env("ASDF_DATA_DIR", "shims"),
+            home.map(|h| h.join(".asdf/shims")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        "mise" | "rtx" => [
+            from_env("MISE_DATA_DIR", "shims"),
+            home.map(|h| h.join(".local/share/mise/shims")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The `PATH` a real language server is spawned with, minus the directory
-/// holding drey's wrappers.
+/// holding drey's wrappers and minus the shim directory of the version manager
+/// we are launching through.
 ///
 /// Configuring an absolute path to the real binary is not enough on its own.
 /// Version managers install *proxies* under those absolute paths: asdf's
@@ -127,7 +170,16 @@ impl BackendKey {
 /// execs it. With the wrapper directory still on `PATH`, that resolves straight
 /// back to drey, and the daemon forkbombs itself. Removing the directory from
 /// the child's environment defeats the whole class of proxy, not just asdf's.
-fn sanitised_path() -> String {
+///
+/// The version manager's own shim directory has to go too, and for the same
+/// reason one level down. `asdf exec rust-analyzer` resolves to a rustup proxy
+/// inside the asdf install; if that toolchain has no `rust-analyzer` component,
+/// rustup falls back to the next `rust-analyzer` on `PATH`, which is asdf's
+/// shim, which execs `asdf exec rust-analyzer` again. Two proxies pointing at
+/// each other spin forever, and every client on that workspace waits on a
+/// handshake that will never come. Dropping the shim directory turns that loop
+/// into rustup's actual complaint, which names the missing component.
+fn sanitised_path(command: &str) -> String {
     let mut banned: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -137,6 +189,7 @@ fn sanitised_path() -> String {
     if let Some(home) = dirs::home_dir() {
         banned.push(home.join(".drey/bin"));
     }
+    banned.extend(shim_dirs_for(command));
 
     std::env::var("PATH")
         .unwrap_or_default()
@@ -270,7 +323,7 @@ impl Backend {
         let mut cmd = Command::new(&cfg.command);
         cmd.args(&cfg.args)
             .args(&key.extra_args)
-            .env("PATH", sanitised_path())
+            .env("PATH", sanitised_path(&cfg.command))
             .envs(&cfg.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -322,8 +375,18 @@ impl Backend {
         )
         .await?;
 
+        let deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
         let init_result = loop {
-            let Some(raw) = read_message(&mut stdout).await? else {
+            let Ok(next) = tokio::time::timeout_at(deadline, read_message(&mut stdout)).await
+            else {
+                anyhow::bail!(
+                    "`{}` did not answer initialize within {}s{}",
+                    cfg.command,
+                    INIT_TIMEOUT.as_secs(),
+                    said(&recent).await,
+                );
+            };
+            let Some(raw) = next? else {
                 anyhow::bail!(
                     "`{}` exited during initialize{}",
                     cfg.command,
@@ -581,7 +644,7 @@ mod tests {
         // Other tests spawn `python3` off PATH, so put it back as we found it.
         let original = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:/usr/bin:/bin", wrappers.display()));
-        let sanitised = sanitised_path();
+        let sanitised = sanitised_path("/usr/local/bin/gopls");
         std::env::set_var("PATH", &original);
         assert!(!sanitised
             .split(':')
@@ -718,9 +781,40 @@ mod tests {
         let _guard = PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let original = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", "/usr/bin:/opt/x/bin");
-        let sanitised = sanitised_path();
+        let sanitised = sanitised_path("/usr/local/bin/gopls");
         std::env::set_var("PATH", &original);
         assert_eq!(sanitised, "/usr/bin:/opt/x/bin");
+    }
+
+    #[test]
+    fn launching_through_asdf_strips_asdf_shims() {
+        // asdf's shim and the rustup proxy it resolves to point at each other
+        // when the toolchain lacks the component. Leaving the shims on PATH
+        // lets them ping-pong until the client gives up.
+        let _guard = PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let shims = dirs::home_dir().unwrap().join(".asdf/shims");
+        let original = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:/usr/bin", shims.display()));
+        let through_asdf = sanitised_path("/usr/local/bin/asdf");
+        let direct = sanitised_path("/usr/local/bin/rust-analyzer");
+        std::env::set_var("PATH", &original);
+
+        assert_eq!(through_asdf, "/usr/bin");
+        assert_eq!(
+            direct,
+            format!("{}:/usr/bin", shims.display()),
+            "a server we exec directly still needs other managers' shims"
+        );
+    }
+
+    #[test]
+    fn only_the_invoked_version_manager_loses_its_shims() {
+        let home = dirs::home_dir().unwrap();
+        assert!(
+            shim_dirs_for("/usr/local/bin/mise").contains(&home.join(".local/share/mise/shims"))
+        );
+        assert!(shim_dirs_for("/usr/bin/gopls").is_empty());
+        assert!(shim_dirs_for("").is_empty());
     }
 
     #[test]

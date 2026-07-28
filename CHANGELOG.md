@@ -10,6 +10,27 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.5]
+
+### Fixed
+
+- The shim directory of the version manager drey launches through is now
+  removed from the server's environment, alongside drey's own. Launching
+  rust-analyzer as `asdf exec rust-analyzer` reaches a rustup proxy inside the
+  asdf installation; when that toolchain has no `rust-analyzer` component, the
+  proxy falls back to the next `rust-analyzer` on `PATH`, which is asdf's shim,
+  which execs `asdf exec rust-analyzer` again. The two proxies handed the name
+  back and forth and never reached a language server. What you saw was a client
+  attached to nothing: no diagnostics, no completion, no error, and a `drey
+  serve` process that sat there for days. With the shims gone from the child's
+  `PATH`, rustup says which component is missing instead.
+
+- A server that does not answer `initialize` within 60 seconds is now given up
+  on, with its stderr attached. Every real server replies in well under a
+  second and indexes afterwards, so a slow handshake is a wedged one. There was
+  no bound before, so a single stuck spawn kept every client on that workspace
+  waiting for as long as the daemon lived.
+
 ## [0.1.4]
 
 ### Fixed

@@ -10,6 +10,21 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.7]
+
+### Fixed
+
+- The guard against a server config pointing back at drey itself now checks
+  the exact executable path instead of banning its whole parent directory.
+  Homebrew installs `drey` at `/usr/local/bin/drey`, the same directory as
+  `asdf` and every other server binary it manages; `drey install` correctly
+  points asdf-managed servers at `/usr/local/bin/asdf`
+  (`command = "/usr/local/bin/asdf"`, `args = ["exec", "rust-analyzer"]`), but
+  the guard read that as drey pointing at itself and refused to spawn it. Six
+  of the twelve built-in servers route through asdf, so this hung silently for
+  anyone with drey installed next to a version manager in the same directory,
+  the same "attached to nothing, no error" symptom as 0.1.5's shim loop.
+
 ## [0.1.6]
 
 ### Fixed

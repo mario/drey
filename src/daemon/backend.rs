@@ -204,6 +204,27 @@ fn sanitised_path(command: &str) -> String {
 
 /// True if `command` resolves to something inside drey's wrapper directory.
 fn is_own_wrapper(command: &str) -> bool {
+    is_own_wrapper_against(
+        command,
+        std::env::current_exe().ok().as_deref(),
+        dirs::home_dir().map(|h| h.join(".drey/bin")).as_deref(),
+    )
+}
+
+/// The comparison `is_own_wrapper` performs, with `exe` and the wrapper
+/// directory passed in so it can be tested without touching the real
+/// filesystem layout.
+///
+/// Every file under the wrapper directory is drey's own doing, so that whole
+/// directory is banned. `exe` is a single file, not a directory: package
+/// managers routinely install drey next to other binaries (Homebrew puts it
+/// in `/usr/local/bin` alongside `asdf`, `gopls`, ...), so banning its parent
+/// would refuse every sibling too. Only the exact path counts.
+fn is_own_wrapper_against(
+    command: &str,
+    exe: Option<&std::path::Path>,
+    wrapper_dir: Option<&std::path::Path>,
+) -> bool {
     let path = std::path::Path::new(command);
     let Some(parent) = path.parent() else {
         return false;
@@ -211,16 +232,19 @@ fn is_own_wrapper(command: &str) -> bool {
     if parent.as_os_str().is_empty() {
         return false; // A bare name; PATH sanitising covers this case.
     }
-    let mut banned: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            banned.push(dir.to_path_buf());
-        }
+    if wrapper_dir.is_some_and(|w| w == parent) {
+        return true;
     }
-    if let Some(home) = dirs::home_dir() {
-        banned.push(home.join(".drey/bin"));
+    let Some(exe) = exe else {
+        return false;
+    };
+    if exe == path {
+        return true;
     }
-    banned.iter().any(|b| b == parent)
+    match (exe.canonicalize(), path.canonicalize()) {
+        (Ok(exe), Ok(path)) => exe == path,
+        _ => false,
+    }
 }
 
 /// Key-order-independent rendering, so equivalent settings hash equally.
@@ -662,6 +686,32 @@ mod tests {
         assert!(is_own_wrapper(&wrapper.to_string_lossy()));
         assert!(!is_own_wrapper("/usr/local/bin/rust-analyzer"));
         assert!(!is_own_wrapper("rust-analyzer"));
+    }
+
+    #[test]
+    fn a_sibling_of_the_installed_binary_is_not_a_wrapper() {
+        // Homebrew installs drey at /usr/local/bin/drey, next to asdf, gopls
+        // and every other binary it manages. `drey install` points servers
+        // at asdf directly (`launch asdf-managed servers through asdf
+        // again`), so banning the whole directory refuses the real backend,
+        // not just drey's own wrapper.
+        let exe = std::path::Path::new("/usr/local/bin/drey");
+        let wrappers = std::path::Path::new("/does/not/exist/.drey/bin");
+        assert!(!is_own_wrapper_against(
+            "/usr/local/bin/asdf",
+            Some(exe),
+            Some(wrappers)
+        ));
+        assert!(is_own_wrapper_against(
+            "/usr/local/bin/drey",
+            Some(exe),
+            Some(wrappers)
+        ));
+        assert!(is_own_wrapper_against(
+            "/does/not/exist/.drey/bin/rust-analyzer",
+            Some(exe),
+            Some(wrappers)
+        ));
     }
 
     #[test]

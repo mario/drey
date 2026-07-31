@@ -10,6 +10,19 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.6]
+
+### Fixed
+
+- Wrapper scripts written by `drey install` now keep the path they were
+  invoked through instead of resolving it. Homebrew runs `drey` via
+  `/usr/local/bin/drey`, a symlink it repoints at every upgrade to point at
+  the newly installed version's Cellar path; canonicalizing that symlink baked
+  the old, versioned Cellar path into every wrapper. The next upgrade deleted
+  that path, so every wrapper drey had installed, not just rust-analyzer's,
+  called a binary that no longer existed, and the daemon that `serve` is
+  supposed to autostart never got to run.
+
 ## [0.1.5]
 
 ### Fixed

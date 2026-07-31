@@ -286,14 +286,28 @@ fn say(s: &str) {
 /// wrappers are named after servers, never `drey`. Any *other* name inside the
 /// wrapper directory means we are running as a wrapper, and a wrapper pointing
 /// at itself would exec forever, so refuse rather than write that out.
+///
+/// The returned path is deliberately left un-resolved: Homebrew invokes this
+/// binary through `/usr/local/bin/drey`, a symlink it repoints at every
+/// upgrade. Canonicalizing here would bake the versioned Cellar path into the
+/// wrappers instead, and the next upgrade deletes that path out from under
+/// them. Canonicalization is still used for the self-reference check below,
+/// since that comparison needs to see through symlinks in `bin_dir`.
 fn current_exe(bin_dir: &Path) -> Result<PathBuf> {
     let exe = std::env::current_exe().context("locating the running drey binary")?;
-    let exe = exe.canonicalize().unwrap_or(exe);
+    exe_for_wrapper(exe, bin_dir)
+}
+
+/// The `current_exe` logic, minus the OS call, so it can be exercised with
+/// fixture paths (`std::env::current_exe` itself can't be faked in a test).
+fn exe_for_wrapper(exe: PathBuf, bin_dir: &Path) -> Result<PathBuf> {
+    let canonical_exe = exe.canonicalize().unwrap_or_else(|_| exe.clone());
     let bin_dir = bin_dir
         .canonicalize()
         .unwrap_or_else(|_| bin_dir.to_owned());
     anyhow::ensure!(
-        exe.parent() != Some(bin_dir.as_path()) || exe.file_name().is_some_and(|n| n == "drey"),
+        canonical_exe.parent() != Some(bin_dir.as_path())
+            || exe.file_name().is_some_and(|n| n == "drey"),
         "the running binary {} is inside the wrapper directory {}; \
          wrappers pointing there would exec themselves",
         exe.display(),
@@ -802,6 +816,30 @@ mod tests {
             "{w}"
         );
         assert!(w.contains(WRAPPER_MARK), "{w}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_homebrew_style_symlink_is_kept_unresolved() {
+        // Homebrew invokes drey through /usr/local/bin/drey, a symlink it
+        // repoints at every upgrade to the versioned Cellar path underneath.
+        // Baking the resolved Cellar path into wrappers means the *next*
+        // upgrade deletes that path out from under them and every wrapper
+        // starts execing a binary that no longer exists.
+        let tmp = tempfile::tempdir().unwrap();
+        let cellar = tmp.path().join("Cellar/drey/0.1.4/bin");
+        std::fs::create_dir_all(&cellar).unwrap();
+        let real = touch_exe(&cellar, "drey");
+
+        let bin_link = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_link).unwrap();
+        let symlink = bin_link.join("drey");
+        std::os::unix::fs::symlink(&real, &symlink).unwrap();
+
+        let wrapper_dir = tmp.path().join("wrappers");
+        let resolved = exe_for_wrapper(symlink.clone(), &wrapper_dir).unwrap();
+        assert_eq!(resolved, symlink, "must keep the symlink, not its target");
+        assert_ne!(resolved, real);
     }
 
     #[test]

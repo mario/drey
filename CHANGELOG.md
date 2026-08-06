@@ -10,6 +10,21 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.8]
+
+### Fixed
+
+- `serve` now gives up on a client that never writes anything, instead of
+  parking on stdin forever. The daemon side already bounded the reverse
+  handshake (0.1.5's `INIT_TIMEOUT`: a backend that doesn't answer
+  `initialize` within 60 seconds is given up on), but nothing bounded a
+  client that opens the shim's stdin and never sends its own `initialize`.
+  That left an orphaned `drey serve` process per abandoned attempt, sitting
+  outside `drey status` (which lists backends, not shims) and outside process
+  accounting until something went looking. A client that writes nothing
+  within 60 seconds now gets the same treatment: the shim exits instead of
+  hanging.
+
 ## [0.1.7]
 
 ### Fixed

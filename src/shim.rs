@@ -4,13 +4,22 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::time::Duration;
-use tokio::io::{copy, stdin, stdout, AsyncWriteExt, BufReader};
+use tokio::io::{copy, stdin, stdout, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use crate::config;
 use crate::daemon::{Control, Hello, HELLO_METHOD};
 use crate::framing::write_message;
 use crate::msg;
+
+/// How long a client gets to write its first byte before we give up. Every
+/// real LSP client sends `initialize` as the first thing on the wire, so
+/// this only fires when a client opened the pipe and never wrote to it (e.g.
+/// gave up on its own handshake without killing the shim it spawned). Without
+/// this, `copy(stdin, ..)` blocks forever with nothing to show it's stuck:
+/// no backend, no session, just an orphaned process sitting on a closed pipe.
+/// Mirrors `INIT_TIMEOUT` on the daemon's other handshake, backend -> daemon.
+const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Runs as a language server: connect to the daemon (starting it if needed),
 /// announce ourselves, then splice stdio to the socket.
@@ -36,10 +45,25 @@ pub async fn serve(server: String, args: Vec<String>) -> Result<()> {
     )
     .await?;
 
+    // Wait for the client to actually say something before committing to an
+    // unbounded splice. A client that opens our stdin and never writes would
+    // otherwise park this process on `copy` forever.
+    let mut input = BufReader::new(stdin());
+    let mut first = [0u8; 8192];
+    let n = match tokio::time::timeout(CLIENT_HANDSHAKE_TIMEOUT, input.read(&mut first)).await {
+        Err(_) => anyhow::bail!(
+            "client wrote nothing within {}s; giving up",
+            CLIENT_HANDSHAKE_TIMEOUT.as_secs()
+        ),
+        Ok(read) => read?,
+    };
+
     // Splice both directions. Whichever side closes first ends the session,
     // which is what the client expects when a language server exits.
     let up = tokio::spawn(async move {
-        let mut input = BufReader::new(stdin());
+        if n > 0 {
+            let _ = sock_tx.write_all(&first[..n]).await;
+        }
         let r = copy(&mut input, &mut sock_tx).await;
         let _ = sock_tx.shutdown().await;
         r

@@ -132,15 +132,21 @@ fn restrict_permissions(sock: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// A (device, inode) pair identifying whatever is currently at `path`. Two
-/// calls returning the same pair mean the path still names the same socket;
-/// a changed pair, or an error, means something else replaced or removed it.
-type SocketIdentity = (u64, u64);
+/// A (device, inode, ctime) triple identifying whatever is currently at
+/// `path`. Two calls returning the same triple mean the path still names the
+/// same socket; a changed triple, or an error, means something else replaced
+/// or removed it. The ctime is there because a filesystem is free to reuse an
+/// inode number the moment it is freed (tmpfs does this readily): a bare
+/// (device, inode) pair can't tell a freshly rebound socket from the one it
+/// replaced if they land on the same number, but they cannot also share the
+/// same status-change timestamp down to the nanosecond.
+type SocketIdentity = (u64, u64, i64);
 
 fn socket_identity(path: &std::path::Path) -> std::io::Result<SocketIdentity> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::symlink_metadata(path)?;
-    Ok((meta.dev(), meta.ino()))
+    let ctime_ns = meta.ctime() * 1_000_000_000 + meta.ctime_nsec();
+    Ok((meta.dev(), meta.ino(), ctime_ns))
 }
 
 async fn serve_client(stream: UnixStream, reg: Arc<Registry>) -> Result<()> {
@@ -327,9 +333,14 @@ mod tests {
         let before = socket_identity(&sock).unwrap();
 
         // Mimics a second daemon taking over the path after the file
-        // disappeared out from under the first one: same path, new inode.
+        // disappeared out from under the first one. A sleep here isn't
+        // stalling for its own sake: some filesystems (tmpfs included) reuse
+        // a freed inode number immediately, and without a real gap the
+        // ctime component of the identity could land in the same tick too,
+        // which is exactly the ambiguity this test exists to rule out.
         drop(first);
         std::fs::remove_file(&sock).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
         let _second = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         assert_ne!(before, socket_identity(&sock).unwrap());
     }

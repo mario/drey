@@ -10,6 +10,24 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+## [0.1.9]
+
+### Fixed
+
+- The daemon's socket, lock and log lived under `dirs::cache_dir()`
+  (`~/Library/Caches/drey` on macOS) when neither `DREY_RUNTIME_DIR` nor
+  `XDG_RUNTIME_DIR` was set. That directory is fair game for the OS and for
+  cache-cleaning tools to prune at any time, including while the daemon is
+  still running: once `daemon.sock` is gone, the daemon keeps listening on a
+  path nothing can reach, and the next client, finding no socket there,
+  starts a second daemon rather than reusing the first. Repeated over days
+  this produced a pile of idle, unreachable `drey daemon` processes that
+  never exited on their own. The fallback now prefers the system temp
+  directory (`$TMPDIR` on macOS) over the cache directory, and the daemon
+  also checks every 60 seconds that its socket path still points at its own
+  listener, exiting if it doesn't, so an orphaned daemon cleans itself up
+  instead of accumulating indefinitely.
+
 ## [0.1.8]
 
 ### Fixed

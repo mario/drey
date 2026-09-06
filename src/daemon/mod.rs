@@ -68,6 +68,13 @@ pub async fn run(foreground: bool) -> Result<()> {
     let listener =
         UnixListener::bind(&sock).with_context(|| format!("binding {}", sock.display()))?;
     restrict_permissions(&sock)?;
+    // Recorded so the sweep below can tell if `sock` still names this
+    // listener. Whatever runtime directory we're in, nothing guarantees the
+    // path survives us: it can be unlinked or replaced out from under a live
+    // daemon (a cache cleaner, a stale-file sweep, a person tidying up), and
+    // a socket nobody can reach any more would otherwise sit idle forever
+    // instead of exiting so a client can start a working one in its place.
+    let identity = socket_identity(&sock)?;
     tracing::info!("drey listening on {}", sock.display());
     if foreground {
         eprintln!("drey listening on {}", sock.display());
@@ -75,13 +82,21 @@ pub async fn run(foreground: bool) -> Result<()> {
 
     let reg = Arc::new(Registry::new(cfg));
 
-    // Idle sweep.
+    // Idle sweep, plus the orphan check described above.
     let gc_reg = reg.clone();
+    let watched_sock = sock.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
             gc_reg.gc();
+            if socket_identity(&watched_sock).ok() != Some(identity) {
+                tracing::warn!(
+                    "{} no longer refers to this daemon; exiting",
+                    watched_sock.display()
+                );
+                std::process::exit(0);
+            }
         }
     });
 
@@ -115,6 +130,17 @@ fn restrict_permissions(sock: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600))?;
     Ok(())
+}
+
+/// A (device, inode) pair identifying whatever is currently at `path`. Two
+/// calls returning the same pair mean the path still names the same socket;
+/// a changed pair, or an error, means something else replaced or removed it.
+type SocketIdentity = (u64, u64);
+
+fn socket_identity(path: &std::path::Path) -> std::io::Result<SocketIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(path)?;
+    Ok((meta.dev(), meta.ino()))
 }
 
 async fn serve_client(stream: UnixStream, reg: Arc<Registry>) -> Result<()> {
@@ -281,6 +307,42 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn socket_identity_is_stable_across_repeated_stats_of_the_same_socket() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("daemon.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        assert_eq!(
+            socket_identity(&sock).unwrap(),
+            socket_identity(&sock).unwrap()
+        );
+    }
+
+    #[test]
+    fn socket_identity_changes_when_the_path_is_rebound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("daemon.sock");
+        let first = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let before = socket_identity(&sock).unwrap();
+
+        // Mimics a second daemon taking over the path after the file
+        // disappeared out from under the first one: same path, new inode.
+        drop(first);
+        std::fs::remove_file(&sock).unwrap();
+        let _second = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        assert_ne!(before, socket_identity(&sock).unwrap());
+    }
+
+    #[test]
+    fn socket_identity_errors_once_the_path_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("daemon.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        drop(listener);
+        std::fs::remove_file(&sock).unwrap();
+        assert!(socket_identity(&sock).is_err());
+    }
 
     /// Roots are canonicalised before they become a `BackendKey`, so two
     /// clients naming the same directory differently share one backend. The

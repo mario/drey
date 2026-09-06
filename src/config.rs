@@ -212,8 +212,17 @@ pub fn runtime_dir() -> PathBuf {
     if let Ok(p) = std::env::var("XDG_RUNTIME_DIR") {
         return PathBuf::from(p).join("drey");
     }
+    // `dirs::cache_dir()` (`~/Library/Caches` on macOS) is not safe for a live
+    // control socket: the OS and cache-cleaning tools are free to delete its
+    // contents at any time, including out from under a daemon that is still
+    // running. That leaves the daemon listening on a socket path nothing can
+    // reach any more, and the next client, finding no file there, starts a
+    // second daemon instead of reusing the first; the orphan never exits on
+    // its own. `state_dir()` is the right persistent choice where it exists
+    // (Linux/BSD); everywhere else fall back to the system temp directory,
+    // which tracks `$TMPDIR` and is cleared on reboot rather than pruned
+    // mid-session.
     dirs::state_dir()
-        .or_else(dirs::cache_dir)
         .unwrap_or_else(std::env::temp_dir)
         .join("drey")
 }

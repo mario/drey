@@ -10,6 +10,16 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+### Fixed
+
+- A server installed next to drey could not start. The daemon removed drey's
+  whole install directory from the server's `PATH`, so after `cargo install
+  drey` the rustup proxy `rust-analyzer` in `~/.cargo/bin` was gone: the spawn
+  failed with "No such file or directory" and the client waited on an
+  `initialize` reply that never came. 0.1.7 fixed the same mistake in the
+  wrapper check. An entry of drey's install directory now goes only when the
+  server name in it resolves to drey itself.
+
 ## [0.1.9]
 
 ### Fixed

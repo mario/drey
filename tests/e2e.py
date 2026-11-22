@@ -86,9 +86,9 @@ class Client:
     def notify(self, method, params):
         self.send({"jsonrpc": "2.0", "method": method, "params": params})
 
-    def initialize(self, root):
+    def initialize(self, root, process_id=None):
         return self.request("initialize", {
-            "processId": os.getpid(),
+            "processId": process_id or os.getpid(),
             "rootUri": "file://" + root,
             "capabilities": {},
         })
@@ -242,6 +242,29 @@ idle_timeout_secs = 3600
 
         for client in (a, b, c):
             client.close()
+
+        # The server watches the processId it was initialized with and exits
+        # when that process is gone, as the spec asks. If the daemon forwarded
+        # the first client's pid, that client quitting would take the shared
+        # server down under everyone still attached.
+        ws2 = os.path.join(tmp, "ws2")
+        os.makedirs(ws2)
+        open(os.path.join(ws2, "Cargo.toml"), "w").write("[workspace]\n")
+        first_editor = subprocess.Popen(["sleep", "300"])
+        d = Client(env, ws2, "D")
+        d.initialize(ws2, process_id=first_editor.pid)
+        e = Client(env, ws2, "E")
+        e.initialize(ws2)
+        pid_shared = e.request("test/ping")["result"]["pid"]
+        spawned = starts()
+        first_editor.kill()
+        first_editor.wait()
+        d.close()
+        time.sleep(1.5)
+        check("the first client quitting does not kill the shared server",
+              e.request("test/ping")["result"]["pid"] == pid_shared and starts() == spawned,
+              f"spawned {starts() - spawned} more")
+        e.close()
     finally:
         subprocess.run([DREY, "stop"], env=env, capture_output=True)
 

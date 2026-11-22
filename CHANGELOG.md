@@ -10,6 +10,16 @@ API, and all of them are things people have wired into an editor config.
 
 ## [Unreleased]
 
+### Fixed
+
+- The shared server died when the client that started it quit, even with
+  other clients still attached. The daemon forwarded that first client's
+  `initialize` unchanged, `processId` included, and the spec asks a server to
+  exit once that process is gone: typescript-language-server checks every
+  3 seconds. The other clients then got a cold respawn. The daemon now sends
+  its own pid, since it is the server's real parent, so the server lives as
+  long as the daemon keeps it and still exits if the daemon dies.
+
 ## [0.1.9]
 
 ### Fixed

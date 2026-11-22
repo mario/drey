@@ -4,11 +4,17 @@
 It records how many times it was started (by appending to $MOCK_TALLY), answers
 `initialize` and a custom `test/ping`, and issues a server-to-client
 `workspace/configuration` request so the test can prove that direction works.
+
+Like typescript-language-server, pyright and most servers built on an LSP
+library, it exits once the `processId` it was initialized with is gone: the
+spec asks servers to do that, and a proxy that forwards a client's pid gets its
+shared server killed when that one client quits.
 """
 import json
 import os
 import sys
 import threading
+import time
 
 def read_message(stream):
     length = None
@@ -58,6 +64,17 @@ def write_message(payload):
         sys.stdout.buffer.write(body)
         sys.stdout.buffer.flush()
 
+def watch_parent(pid):
+    """Exit when the process that `initialize` named as our parent is gone."""
+    while True:
+        time.sleep(0.2)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            os._exit(1)
+        except PermissionError:
+            pass  # alive, owned by someone else
+
 def main():
     tally = os.environ.get("MOCK_TALLY")
     if tally:
@@ -73,6 +90,9 @@ def main():
         method = msg.get("method")
 
         if method == "initialize":
+            parent = (msg.get("params") or {}).get("processId")
+            if isinstance(parent, int):
+                threading.Thread(target=watch_parent, args=(parent,), daemon=True).start()
             write_message({
                 "jsonrpc": "2.0", "id": msg["id"],
                 "result": {"capabilities": {"textDocumentSync": 2}, "serverInfo": {"name": "mock"}},

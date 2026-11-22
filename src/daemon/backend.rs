@@ -332,7 +332,7 @@ impl Backend {
         cfg: &ServerConfig,
         key: BackendKey,
         private_to: Option<u64>,
-        init_params: Value,
+        mut init_params: Value,
     ) -> Result<Arc<Self>> {
         // Refuse to run one of our own wrappers. Without this, a misconfigured
         // `command` makes the daemon spawn itself without limit.
@@ -389,6 +389,14 @@ impl Backend {
                 }
             }
         });
+
+        // The spec asks a server to exit once `processId` is gone, and most do
+        // (typescript-language-server polls it every 3s). The first client's
+        // pid would tie the shared server to that one client; the daemon is
+        // the server's real parent, so it names itself.
+        if let Some(params) = init_params.as_object_mut() {
+            params.insert("processId".into(), json!(std::process::id()));
+        }
 
         // The handshake runs before the router starts, so we can read the
         // response directly instead of racing the router for it.

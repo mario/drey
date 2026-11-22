@@ -180,23 +180,45 @@ fn shim_dirs_for(command: &str) -> Vec<std::path::PathBuf> {
 /// handshake that will never come. Dropping the shim directory turns that loop
 /// into rustup's actual complaint, which names the missing component.
 fn sanitised_path(command: &str) -> String {
-    let mut banned: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            banned.push(dir.to_path_buf());
-        }
-    }
-    if let Some(home) = dirs::home_dir() {
-        banned.push(home.join(".drey/bin"));
-    }
-    banned.extend(shim_dirs_for(command));
+    sanitised_path_against(
+        &std::env::var("PATH").unwrap_or_default(),
+        command,
+        std::env::current_exe().ok().as_deref(),
+        dirs::home_dir().map(|h| h.join(".drey/bin")).as_deref(),
+    )
+}
 
-    std::env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
+/// The filter `sanitised_path` applies, with PATH, drey's executable and the
+/// wrapper directory passed in so it can be tested without the real layout.
+///
+/// The wrapper directory holds only drey's own wrappers, so it goes whole.
+/// drey's install directory does not: `cargo install` puts drey into
+/// ~/.cargo/bin next to the rustup proxies (`rust-analyzer`), and Homebrew
+/// into /usr/local/bin next to everything else. An entry there is dropped
+/// only when the server name in it resolves to drey itself.
+fn sanitised_path_against(
+    path: &str,
+    command: &str,
+    exe: Option<&std::path::Path>,
+    wrapper_dir: Option<&std::path::Path>,
+) -> String {
+    let name = std::path::Path::new(command)
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    let own = exe.and_then(|e| std::fs::canonicalize(e).ok());
+    let shims = shim_dirs_for(command);
+
+    path.split(':')
         .filter(|entry| {
             let p = std::path::Path::new(entry);
-            !banned.iter().any(|b| b == p)
+            if wrapper_dir == Some(p) || shims.iter().any(|s| s == p) {
+                return false;
+            }
+            let names_drey = !name.is_empty()
+                && own.is_some()
+                && std::fs::canonicalize(p.join(&name)).ok() == own;
+            !names_drey
         })
         .collect::<Vec<_>>()
         .join(":")
@@ -832,6 +854,39 @@ mod tests {
         // Bare names are handled by sanitising PATH instead.
         assert!(!is_own_wrapper("gopls"));
         assert!(!is_own_wrapper(""));
+    }
+
+    #[test]
+    fn drey_install_directory_stays_on_path_for_its_siblings() {
+        // `cargo install drey` puts drey into ~/.cargo/bin, next to the rustup
+        // proxy `rust-analyzer`. Stripping that whole directory left the
+        // daemon unable to spawn rust-analyzer at all.
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let exe = bin.join("drey");
+        std::fs::write(&exe, "drey").unwrap();
+        std::fs::write(bin.join("rust-analyzer"), "proxy").unwrap();
+        let path = format!("{}:/usr/bin", bin.display());
+        assert_eq!(
+            sanitised_path_against(&path, "rust-analyzer", Some(&exe), None),
+            path
+        );
+    }
+
+    #[test]
+    fn a_path_entry_naming_drey_itself_as_the_server_is_stripped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let exe = bin.join("drey");
+        std::fs::write(&exe, "drey").unwrap();
+        std::os::unix::fs::symlink(&exe, bin.join("gopls")).unwrap();
+        let path = format!("{}:/usr/bin", bin.display());
+        assert_eq!(
+            sanitised_path_against(&path, "gopls", Some(&exe), None),
+            "/usr/bin"
+        );
     }
 
     #[test]

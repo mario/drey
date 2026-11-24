@@ -8,7 +8,7 @@ The surfaces that count as breaking are the CLI flags, the config file keys, and
 the wrapper scripts `drey install` puts on your `PATH`. None of them is a Rust
 API, and all of them are things people have wired into an editor config.
 
-## [Unreleased]
+## [Upcoming 0.1.10]
 
 ### Fixed
 
@@ -19,6 +19,8 @@ API, and all of them are things people have wired into an editor config.
   3 seconds. The other clients then got a cold respawn. The daemon now sends
   its own pid, since it is the server's real parent, so the server lives as
   long as the daemon keeps it and still exits if the daemon dies.
+
+## [Unreleased]
 
 ## [0.1.9]
 

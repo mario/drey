@@ -8,7 +8,9 @@ The surfaces that count as breaking are the CLI flags, the config file keys, and
 the wrapper scripts `drey install` puts on your `PATH`. None of them is a Rust
 API, and all of them are things people have wired into an editor config.
 
-## [Upcoming 0.1.10]
+## [Unreleased]
+
+## [0.1.10]
 
 ### Fixed
 
@@ -20,10 +22,6 @@ API, and all of them are things people have wired into an editor config.
   its own pid, since it is the server's real parent, so the server lives as
   long as the daemon keeps it and still exits if the daemon dies.
 
-## [Unreleased]
-
-### Fixed
-
 - A server installed next to drey could not start. The daemon removed drey's
   whole install directory from the server's `PATH`, so after `cargo install
   drey` the rustup proxy `rust-analyzer` in `~/.cargo/bin` was gone: the spawn
@@ -31,6 +29,8 @@ API, and all of them are things people have wired into an editor config.
   `initialize` reply that never came. 0.1.7 fixed the same mistake in the
   wrapper check. An entry of drey's install directory now goes only when the
   server name in it resolves to drey itself.
+
+- Tokio was updated to 1.53.3, a patched version for RUSTSEC-2026-0386.
 
 ## [0.1.9]
 
